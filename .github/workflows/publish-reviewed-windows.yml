@@ -1,0 +1,67 @@
+name: Publish reviewed Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Verify reviewed archive and installer
+        env:
+          ARTIFACT_URL: ${{ secrets.PLATFORM_REVIEWED_ARTIFACT_URL }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.parse, urllib.request, zipfile
+          url = os.environ.pop('ARTIFACT_URL')
+          u = urllib.parse.urlparse(url)
+          assert u.scheme == 'https' and not u.username and not u.password
+          assert u.hostname and (u.hostname.endswith('.blob.core.windows.net') or u.hostname.endswith('.actions.githubusercontent.com'))
+          digest, received = hashlib.sha256(), 0
+          try:
+              with urllib.request.urlopen(url, timeout=60) as source, open('reviewed.zip', 'xb') as out:
+                  while chunk := source.read(1024 * 1024):
+                      received += len(chunk)
+                      assert received <= 132850017
+                      digest.update(chunk)
+                      out.write(chunk)
+          except Exception:
+              raise RuntimeError('Reviewed archive transfer failed; private download URL omitted') from None
+          assert received == 132850017
+          assert digest.hexdigest() == '2c05fa8a53eb89acfa92ccf22adc68b2b2af1006122a5be8e017eaf9270bf366'
+          filename = 'Platform-0.8.5-Windows-x64-Setup.exe'
+          with zipfile.ZipFile('reviewed.zip') as archive:
+              entry = archive.getinfo('dist/' + filename)
+              assert entry.file_size == 116554514
+              data = archive.read(entry)
+          assert hashlib.sha256(data).hexdigest() == 'b5e3c8495d645b62471c3cae17fab5afa5e65772da2411201f0d885475d0942a'
+          pathlib.Path(filename).write_bytes(data)
+          print('PASS reviewed archive and installer hashes')
+          PY
+      - name: Upload installer to existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          repo = 'supaplayabusiness/VoiceDictation-releases'
+          r = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases/418793626']))
+          assert r['draft'] and r['tag_name'] == 'windows-v0.8.05'
+          filename = 'Platform-0.8.5-Windows-x64-Setup.exe'
+          existing = [a for a in r['assets'] if a['name'] == filename]
+          if existing:
+              assert len(existing) == 1 and existing[0]['state'] == 'uploaded'
+              assert existing[0]['size'] == 116554514
+              assert existing[0]['digest'] == 'sha256:b5e3c8495d645b62471c3cae17fab5afa5e65772da2411201f0d885475d0942a'
+          else:
+              subprocess.run(['gh', 'release', 'upload', 'windows-v0.8.05', filename, '--repo', repo], check=True)
+          print('PASS installer uploaded; release remains a draft for final review')
+          PY
+      - name: Remove temporary transfer files
+        if: always()
+        run: rm -f reviewed.zip Platform-0.8.5-Windows-x64-Setup.exe
