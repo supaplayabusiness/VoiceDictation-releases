@@ -1,0 +1,192 @@
+name: Transfer reviewed Voice 1.14.2 archive
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reviewed-voice-1.14.2-build11402
+  cancel-in-progress: false
+jobs:
+  transfer:
+    if: github.repository == 'supaplayabusiness/VoiceDictation-releases' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Assemble and verify fixed Voice archive in existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: '1'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          #!/usr/bin/env python3
+          """One fixed release transfer; no signing, extraction, release publication or overwrite."""
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          
+          MANIFEST = {'repository': 'supaplayabusiness/VoiceDictation-releases', 'source_release_id': 421139103, 'source_tag': 'platform-voice-transfer-1.14.2-build11402', 'target_release_id': 421108841, 'target_tag': 'platform-voice-v1.14.2', 'final_name': 'platform-voice-1.14.2-build11402.zip', 'final_bytes': 110273149, 'final_sha256': 'de9f6ed27a65170b44be14cdcfa8713f452061906d721d15970ac58e5eee04aa', 'parts': [{'index': 0, 'name': 'voice-1.14.2-build11402.part000', 'bytes': 10485760, 'sha256': 'b3dfc2476b7df17fb215457cc79f551c854cbc2b42e08a5683e6fd0eef25025d'}, {'index': 1, 'name': 'voice-1.14.2-build11402.part001', 'bytes': 10485760, 'sha256': 'd600e17000f22a93ef9707bee217082c4272d1a2878fcdb762c50ecef86d9b60'}, {'index': 2, 'name': 'voice-1.14.2-build11402.part002', 'bytes': 10485760, 'sha256': 'f4aef1fc47d732b084fc4254504474450d104048011fd9d6c821aaf9c8df88f7'}, {'index': 3, 'name': 'voice-1.14.2-build11402.part003', 'bytes': 10485760, 'sha256': 'fd3d4623a359dbaf0313c83f6be49f69bc30ab96c4ad17592442b1a7a287bb41'}, {'index': 4, 'name': 'voice-1.14.2-build11402.part004', 'bytes': 10485760, 'sha256': 'e523d6ed1969f8f8303abdab680078cd1b695e4219c422dc3408f0f9e6297911'}, {'index': 5, 'name': 'voice-1.14.2-build11402.part005', 'bytes': 10485760, 'sha256': '2c31a3d28d93d104a6b5ee6d5302eccd27c5b6915362f02ed638a38091fdbd63'}, {'index': 6, 'name': 'voice-1.14.2-build11402.part006', 'bytes': 10485760, 'sha256': '7aac9c000624723ec3deb2e662fb5f7c3787982a8aa57d500c3a92e26594914e'}, {'index': 7, 'name': 'voice-1.14.2-build11402.part007', 'bytes': 10485760, 'sha256': 'a51858a3f2581e63739f8267cc90699e2872494bf7c61e01cbc42aadf0688f7a'}, {'index': 8, 'name': 'voice-1.14.2-build11402.part008', 'bytes': 10485760, 'sha256': '21c2de110a5636d8408e6affde944cfcb3408480e6a09b5f3e6897494f0c9a7d'}, {'index': 9, 'name': 'voice-1.14.2-build11402.part009', 'bytes': 10485760, 'sha256': '2c0e2bdc71fa7ad73899c77d2ac2c32ef1e88ce0686bd92622cbc851f1be4db2'}, {'index': 10, 'name': 'voice-1.14.2-build11402.part010', 'bytes': 5415549, 'sha256': '0e7639879612f89303ba8c4dd0a524e455937c5ce18aae3976518a9441b2c63f'}]}
+          
+          
+          def require(condition, message):
+              if not condition:
+                  raise RuntimeError(message)
+          
+          
+          def gh(*arguments):
+              result = subprocess.run(['gh', *arguments], capture_output=True, text=True, timeout=180)
+              require(result.returncode == 0, 'GitHub operation failed; stop without replacing any asset')
+              return result.stdout
+          
+          
+          def api(route):
+              return json.loads(gh('api', 'repos/' + MANIFEST['repository'] + '/' + route))
+          
+          
+          def asset_state(asset):
+              return {key: asset.get(key) for key in ('id', 'name', 'state', 'size', 'digest')}
+          
+          
+          def release_state(release):
+              return {'id': release['id'], 'tag_name': release['tag_name'],
+                      'draft': release['draft'], 'prerelease': release['prerelease'],
+                      'assets': sorted((asset_state(asset) for asset in release['assets']),
+                                       key=lambda asset: asset['id'])}
+          
+          
+          def protected_state():
+              releases = api('releases?per_page=100')
+              require(len(releases) < 100, 'Release inventory pagination requires review')
+              excluded = {MANIFEST['source_release_id'], MANIFEST['target_release_id']}
+              latest = api('releases/latest')
+              require(latest['id'] not in excluded, 'Transfer or target unexpectedly is Latest')
+              return {'latest': {'id': latest['id'], 'tag_name': latest['tag_name']},
+                      'releases': sorted((release_state(release) for release in releases
+                                          if release['id'] not in excluded),
+                                         key=lambda release: release['id'])}
+          
+          
+          def check_manifest(manifest):
+              require(manifest['repository'] == 'supaplayabusiness/VoiceDictation-releases', 'Wrong repository')
+              require(manifest['source_release_id'] == 421139103 and
+                      manifest['source_tag'] == 'platform-voice-transfer-1.14.2-build11402', 'Wrong source draft')
+              require(manifest['target_release_id'] == 421108841 and
+                      manifest['target_tag'] == 'platform-voice-v1.14.2', 'Wrong target draft')
+              require(manifest['final_name'] == 'platform-voice-1.14.2-build11402.zip' and
+                      manifest['final_bytes'] == 110273149 and
+                      manifest['final_sha256'] == 'de9f6ed27a65170b44be14cdcfa8713f452061906d721d15970ac58e5eee04aa',
+                      'Wrong final archive identity')
+              parts = manifest['parts']
+              require(len(parts) == 11 and sum(part['bytes'] for part in parts) == manifest['final_bytes'],
+                      'Wrong part count or total size')
+              for index, part in enumerate(parts):
+                  require(set(part) == {'index', 'name', 'bytes', 'sha256'} and part['index'] == index and
+                          part['name'] == f'voice-1.14.2-build11402.part{index:03d}' and
+                          part['bytes'] == (10485760 if index < 10 else 5415549) and
+                          re.fullmatch(r'[a-f0-9]{64}', part['sha256']), 'Wrong part identity or order')
+          
+          
+          def check_draft(release, kind):
+              require(release['id'] == MANIFEST[kind + '_release_id'] and
+                      release['tag_name'] == MANIFEST[kind + '_tag'] and
+                      release['draft'] is True and release['prerelease'] is True,
+                      'Unexpected ' + kind + ' release identity or visibility')
+          
+          
+          def verify_asset_metadata(asset, name, size, sha):
+              require(asset.get('name') == name and asset.get('state') == 'uploaded' and
+                      asset.get('size') == size and asset.get('digest') == 'sha256:' + sha,
+                      'Asset metadata differs from reviewed bytes')
+          
+          
+          def verify_file(path, size, sha):
+              require(path.is_file() and not path.is_symlink() and path.stat().st_size == size,
+                      'Downloaded file size mismatch')
+              digest = hashlib.sha256()
+              with path.open('rb') as source:
+                  while chunk := source.read(1024 * 1024):
+                      digest.update(chunk)
+              require(digest.hexdigest() == sha, 'Downloaded file SHA256 mismatch')
+          
+          
+          def transfer():
+              check_manifest(MANIFEST)
+              require(os.environ.get('GITHUB_REPOSITORY') == MANIFEST['repository'], 'Wrong workflow repository')
+              source = api('releases/' + str(MANIFEST['source_release_id']))
+              target = api('releases/' + str(MANIFEST['target_release_id']))
+              check_draft(source, 'source')
+              check_draft(target, 'target')
+              expected = {part['name']: part for part in MANIFEST['parts']}
+              assets = {asset['name']: asset for asset in source['assets']}
+              require(len(assets) == len(source['assets']) and set(assets) == set(expected),
+                      'Source draft must contain exactly the reviewed parts')
+              for name, part in expected.items():
+                  verify_asset_metadata(assets[name], name, part['bytes'], part['sha256'])
+              require(len(target['assets']) <= 1 and all(asset['name'] == MANIFEST['final_name']
+                                                       for asset in target['assets']),
+                      'Unexpected target draft assets')
+              if target['assets']:
+                  verify_asset_metadata(target['assets'][0], MANIFEST['final_name'],
+                                        MANIFEST['final_bytes'], MANIFEST['final_sha256'])
+              protected = protected_state()
+              source_baseline = release_state(source)
+              with tempfile.TemporaryDirectory(prefix='reviewed-voice-') as directory:
+                  root = Path(directory)
+                  final = root / MANIFEST['final_name']
+                  with final.open('xb') as assembled:
+                      for part in MANIFEST['parts']:
+                          path = root / part['name']
+                          # gh manages GitHub authentication and redirects. No custom HTTP
+                          # redirect handler receives an Authorization header from this code.
+                          gh('release', 'download', MANIFEST['source_tag'], '--repo', MANIFEST['repository'],
+                             '--pattern', part['name'], '--output', str(path))
+                          verify_file(path, part['bytes'], part['sha256'])
+                          with path.open('rb') as fragment:
+                              while chunk := fragment.read(1024 * 1024):
+                                  assembled.write(chunk)
+                          path.unlink()
+                  verify_file(final, MANIFEST['final_bytes'], MANIFEST['final_sha256'])
+                  # Recheck identities before the only possible mutation. Never overwrite an
+                  # existing asset or publish the draft; the original publisher finishes later.
+                  require(release_state(api('releases/' + str(MANIFEST['source_release_id']))) == source_baseline,
+                          'Source draft changed during assembly')
+                  target = api('releases/' + str(MANIFEST['target_release_id']))
+                  check_draft(target, 'target')
+                  require(len(target['assets']) <= 1 and all(asset['name'] == MANIFEST['final_name']
+                                                           for asset in target['assets']),
+                          'Target draft changed during assembly')
+                  if target['assets']:
+                      verify_asset_metadata(target['assets'][0], MANIFEST['final_name'],
+                                            MANIFEST['final_bytes'], MANIFEST['final_sha256'])
+                  else:
+                      gh('release', 'upload', MANIFEST['target_tag'], str(final), '--repo', MANIFEST['repository'])
+                  target = api('releases/' + str(MANIFEST['target_release_id']))
+                  check_draft(target, 'target')
+                  require(len(target['assets']) == 1, 'Target must contain exactly one reviewed archive')
+                  verify_asset_metadata(target['assets'][0], MANIFEST['final_name'],
+                                        MANIFEST['final_bytes'], MANIFEST['final_sha256'])
+                  # Read the uploaded draft bytes back using the same GitHub CLI transport.
+                  received = root / 'uploaded-copy.zip'
+                  gh('release', 'download', MANIFEST['target_tag'], '--repo', MANIFEST['repository'],
+                     '--pattern', MANIFEST['final_name'], '--output', str(received))
+                  verify_file(received, MANIFEST['final_bytes'], MANIFEST['final_sha256'])
+              require(protected_state() == protected, 'Protected releases or Latest changed')
+              require(release_state(api('releases/' + str(MANIFEST['source_release_id']))) == source_baseline,
+                      'Source draft changed')
+              print('PASS exact Voice archive assembled, uploaded and downloaded; target remains draft; old releases and Latest unchanged')
+          
+          
+          if __name__ == '__main__':
+              try:
+                  transfer()
+              except Exception as error:
+                  if isinstance(error, RuntimeError):
+                      raise SystemExit(str(error))
+                  raise SystemExit('Transfer failed; no automatic replacement or retry was attempted') from None
+          PY
