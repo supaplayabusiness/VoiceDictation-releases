@@ -1,0 +1,73 @@
+name: Publish reviewed Windows installer 0.8.07
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Verify reviewed archive and installer
+        env:
+          ARTIFACT_URL: ${{ secrets.PLATFORM_REVIEWED_NIGHT_ARTIFACT_URL }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.parse, urllib.request, zipfile
+          url = os.environ.pop('ARTIFACT_URL')
+          u = urllib.parse.urlparse(url)
+          assert u.scheme == 'https' and not u.username and not u.password
+          assert u.hostname and (u.hostname.endswith('.blob.core.windows.net') or u.hostname.endswith('.actions.githubusercontent.com'))
+          digest, received = hashlib.sha256(), 0
+          try:
+              with urllib.request.urlopen(url, timeout=60) as source, open('reviewed.zip', 'xb') as out:
+                  while chunk := source.read(1024 * 1024):
+                      received += len(chunk)
+                      assert received <= 132856912
+                      digest.update(chunk)
+                      out.write(chunk)
+          except Exception:
+              raise RuntimeError('Reviewed archive transfer failed; private download URL omitted') from None
+          assert received == 132856912
+          assert digest.hexdigest() == '1efa9f7043b21e9a8dbb3420974f24fd648e5351aae7a24f6ae34f8eceefbe1a'
+          filename = 'Platform-0.8.7-Windows-x64-Setup.exe'
+          with zipfile.ZipFile('reviewed.zip') as archive:
+              entry = archive.getinfo('dist/' + filename)
+              assert entry.file_size == 116560258
+              data = archive.read(entry)
+          assert hashlib.sha256(data).hexdigest() == '9a3ec4e8c3bb25c031f83b7e0f0119c6a007c3d091572f00d2000a342d90e581'
+          pathlib.Path(filename).write_bytes(data)
+          print('PASS reviewed archive and installer hashes')
+          PY
+      - name: Upload installer to existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          repo = 'supaplayabusiness/VoiceDictation-releases'
+          r = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases/421311762']))
+          assert r['draft'] and r['tag_name'] == 'windows-v0.8.07'
+          expected = {'platform-file-tools-0.8.07-windows-x64.zip': {'size': 1790611, 'digest': 'sha256:7c4a0dfb3c109154ddb82f864f8016fdadd0caf9f568719f4477aba057ac72f0'}, 'platform-reader-0.8.07-windows-x64.zip': {'size': 1716958, 'digest': 'sha256:462374ad09e52bd668ac6e98ef36c263ff226a9879d8fa443f4e277349d3c109'}, 'platform-voice-0.8.07-windows-x64.zip': {'size': 2609722, 'digest': 'sha256:4cc3acc22e9e48f83a1dbf52f9b0b6bec15005dbe4898171492459f7c85ffca7'}, 'platform-kaskad-0.8.07-windows-x64.zip': {'size': 742272, 'digest': 'sha256:a47b181efcc70622a0a8705bf27c9037e7a2106ca606e58eb0231be6fe9eba5f'}}
+          modules = {a['name']: a for a in r['assets'] if a['name'] != 'Platform-0.8.7-Windows-x64-Setup.exe'}
+          assert set(modules) == set(expected)
+          for name, descriptor in expected.items():
+              assert modules[name]['state'] == 'uploaded'
+              assert modules[name]['size'] == descriptor['size'] and modules[name]['digest'] == descriptor['digest']
+          filename = 'Platform-0.8.7-Windows-x64-Setup.exe'
+          existing = [a for a in r['assets'] if a['name'] == filename]
+          if existing:
+              assert len(existing) == 1 and existing[0]['state'] == 'uploaded'
+              assert existing[0]['size'] == 116560258
+              assert existing[0]['digest'] == 'sha256:9a3ec4e8c3bb25c031f83b7e0f0119c6a007c3d091572f00d2000a342d90e581'
+          else:
+              subprocess.run(['gh', 'release', 'upload', 'windows-v0.8.07', filename, '--repo', repo], check=True)
+          print('PASS installer uploaded; release remains a draft for final review')
+          PY
+      - name: Remove temporary transfer files
+        if: always()
+        run: rm -f reviewed.zip Platform-0.8.7-Windows-x64-Setup.exe
