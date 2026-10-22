@@ -1,0 +1,17 @@
+name: Transfer reviewed Voice 1.14.3
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Reassemble and verify exact reviewed archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/relay-voice-1.14.3.py
